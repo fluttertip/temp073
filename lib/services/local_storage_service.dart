@@ -45,7 +45,6 @@ class LocalStorageService {
 
       return items;
     } catch (e) {
-      print('Error listing files: $e');
       return [];
     }
   }
@@ -56,7 +55,6 @@ class LocalStorageService {
       await newDir.create();
       return true;
     } catch (e) {
-      print('Error creating folder: $e');
       return false;
     }
   }
@@ -77,7 +75,6 @@ class LocalStorageService {
       
       return false;
     } catch (e) {
-      print('Error deleting file: $e');
       return false;
     }
   }
@@ -101,7 +98,6 @@ class LocalStorageService {
       
       return false;
     } catch (e) {
-      print('Error renaming file: $e');
       return false;
     }
   }
@@ -115,7 +111,6 @@ class LocalStorageService {
       }
       return false;
     } catch (e) {
-      print('Error copying file: $e');
       return false;
     }
   }
@@ -129,7 +124,6 @@ class LocalStorageService {
       }
       return false;
     } catch (e) {
-      print('Error moving file: $e');
       return false;
     }
   }

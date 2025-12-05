@@ -6,12 +6,16 @@ import '../widgets/file_list_item.dart';
 import '../widgets/file_operation_dialog.dart';
 import '../utils/logger.dart';
 
+
+
 class LocalBrowserScreen extends StatefulWidget {
   const LocalBrowserScreen({super.key});
 
   @override
   State<LocalBrowserScreen> createState() => _LocalBrowserScreenState();
 }
+
+
 
 class _LocalBrowserScreenState extends State<LocalBrowserScreen> {
   String _currentPath = '/storage/emulated/0';
@@ -232,9 +236,11 @@ class _LocalBrowserScreenState extends State<LocalBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+        appBar: AppBar(
+        title: const Text('main storage'),
+      ),
       body: Column(
         children: [
-          // Path breadcrumb
           Container(
             padding: const EdgeInsets.all(8),
             color: Theme.of(context).colorScheme.surfaceContainerHighest,

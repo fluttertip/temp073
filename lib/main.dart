@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'utils/logger.dart';
+import 'package:pdfrx/pdfrx.dart';
 
-void main() {
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  pdfrxFlutterInitialize();
   logger.i('🚀 FileShareApp starting...');
   runApp(const FileShareApp());
 }

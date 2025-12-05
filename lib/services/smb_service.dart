@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:smb_connect/smb_connect.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/file_item.dart';
 import '../models/connection_profile.dart';
 import '../utils/logger.dart';
+
 
 class SmbService {
   // Singleton pattern - IMPORTANT!
@@ -75,6 +77,38 @@ class SmbService {
     }
   }
 
+/// Get a stream for reading file directly (for streaming)
+Future<Stream<List<int>>?> getFileStream(String path) async {
+  try {
+    if (!isConnected || _smbConnect == null) {
+      logger.e('❌ Not connected to SMB');
+      return null;
+    }
+
+    // Clean path and build full SMB path
+    var cleanPath = path.replaceAll('//', '/');
+    if (cleanPath.startsWith('/')) {
+      cleanPath = cleanPath.substring(1);
+    }
+    final sharePath = '/${_currentProfile!.shareName}/$cleanPath';
+    
+    logger.d('📖 Opening file stream: $sharePath');
+
+    // Get the SmbFile object first
+    final smbFile = await _smbConnect!.file(sharePath);
+    
+    // Then open the stream
+    final stream = await _smbConnect!.openRead(smbFile);
+    logger.d('✅ File stream opened');
+    
+    return stream;
+  } catch (e) {
+    logger.e('❌ Error opening file stream: $e');
+    logger.e('Stack trace: ${StackTrace.current}');
+    return null;
+  }
+}
+
 Future<List<FileItem>> listFiles(String path) async {
   if (_smbConnect == null || _currentProfile == null) {
     logger.e('❌ Not connected to SMB server');
@@ -83,8 +117,13 @@ Future<List<FileItem>> listFiles(String path) async {
 
   try {
     // Clean path first
+
     var cleanPath = path.replaceAll('//', '/');
     logger.d('📂 Listing SMB files from: $cleanPath');
+    // Ensure cleanPath starts with / but listFiles uses it as-is
+    if (!cleanPath.startsWith('/')) {
+      cleanPath = '/$cleanPath';
+    }
     final sharePath = '/${_currentProfile!.shareName}$cleanPath';
     logger.d('📡 SMB share path: $sharePath');
     
@@ -109,10 +148,12 @@ Future<List<FileItem>> listFiles(String path) async {
       }
       
       logger.d('📋 FINAL: ${file.name} → Type: ${isDirectory ? "📁 FOLDER" : "📄 FILE"} | Size: ${file.size} | Attributes: ${file.attributes}');
+
+      final filePath = path == '/' ? '/${file.name}' : '$path/${file.name}';
       
       items.add(FileItem(
         name: file.name,
-        path: '$path/${file.name}',
+        path: filePath,
         type: isDirectory ? FileItemType.folder : FileItemType.file,
         location: FileLocation.network,
         size: isDirectory ? 0 : file.size,
@@ -138,48 +179,9 @@ Future<List<FileItem>> listFiles(String path) async {
     return [];
   }
 }
-  // Future<List<FileItem>> listFiles(String path) async {
-  //   if (_smbConnect == null || _currentProfile == null) {
-  //     logger.e('❌ Not connected to SMB server');
-  //     throw Exception('Not connected to SMB server');
-  //   }
 
-  //   try {
-  //     logger.d('📂 Listing SMB files from: $path');
-  //     final sharePath = '/${_currentProfile!.shareName}$path';
-  //     final smbFolder = await _smbConnect!.file(sharePath);
-  //     final files = await _smbConnect!.listFiles(smbFolder);
-
-  //     final List<FileItem> items = [];
-
-  //     for (var file in files) {
-  //       final isDirectory = file.isDirectory == true;
-        
-  //       items.add(FileItem(
-  //         name: file.name,
-  //         path: '$path/${file.name}',
-  //         type: isDirectory ? FileItemType.folder : FileItemType.file,
-  //         location: FileLocation.network,
-  //         size: file.size,
-  //         modifiedDate: DateTime.fromMillisecondsSinceEpoch(file.lastModified),
-  //       ));
-  //     }
-
-  //     // Sort: folders first, then files
-  //     items.sort((a, b) {
-  //       if (a.type == b.type) {
-  //         return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-  //       }
-  //       return a.type == FileItemType.folder ? -1 : 1;
-  //     });
-
-  //     logger.i('✅ Listed ${items.length} SMB items');
-  //     return items;
-  //   } catch (e) {
-  //     logger.e('❌ Error listing SMB files: $e');
-  //     return [];
-  //   }
-  // }
+// Fix for SMB Service - downloadFile method
+// Replace lines 183-260 with this:
 
 Future<bool> downloadFile(
     String remotePath,
@@ -197,7 +199,7 @@ Future<bool> downloadFile(
       final sharePath = '/${_currentProfile!.shareName}/$cleanPath';
       logger.d('📝 Download SMB path: $sharePath');
 
-      // Ensure parent directory exists
+      // Ensure parent directory exists and delete existing file
       final localFile = File(localPath);
       final parentDir = Directory(localPath.substring(0, localPath.lastIndexOf('/')));
       
@@ -208,10 +210,16 @@ Future<bool> downloadFile(
         logger.d('✅ Created parent directory: ${parentDir.path}');
       }
 
+      // DELETE existing file if it exists (fixes "File exists" error)
+      if (await localFile.exists()) {
+        logger.d('🗑️ Deleting existing file: $localPath');
+        await localFile.delete();
+        logger.d('✅ Existing file deleted');
+      }
+
       logger.d('🔍 Attempting to open SMB file: $sharePath');
       final smbFile = await _smbConnect!.file(sharePath);
       
-
       logger.d('📊 SMB File size: ${smbFile.size} bytes');
       logger.d('📝 Local save path: $localPath');
 
@@ -229,7 +237,6 @@ Future<bool> downloadFile(
       await for (var chunk in reader) {
         sink.add(chunk);
         downloaded += chunk.length;
-        logger.d('📊 Downloaded: $downloaded / $fileSize bytes');
         onProgress?.call(downloaded, fileSize);
       }
 
@@ -239,8 +246,8 @@ Future<bool> downloadFile(
       
       // Verify file was written
       if (await localFile.exists()) {
-        final fileSize = await localFile.length();
-        logger.i('✅ Download completed: $remotePath ($fileSize bytes saved)');
+        final downloadedFileSize = await localFile.length();
+        logger.i('✅ Download completed: $remotePath ($downloadedFileSize bytes saved)');
         logger.d('💾 File saved to: $localPath');
         return true;
       } else {
@@ -248,13 +255,64 @@ Future<bool> downloadFile(
         return false;
       }
     } catch (e) {
-      logger.e('❌ Error downloading file: $e');
-      logger.e('Stack trace: ${StackTrace.current}');
-      print('Error downloading file: $e');
-      print('Stack trace: ${StackTrace.current}');
+      logger.e('❌ ERROR downloading file: $e');
+      logger.e('🐛 Stack trace: ${StackTrace.current}');
+      // Try to delete partial file on error
+      try {
+        final localFile = File(localPath);
+        if (await localFile.exists()) {
+          await localFile.delete();
+          logger.d('🗑️ Deleted partial file on error');
+        }
+      } catch (cleanupError) {
+        logger.e('⚠️ Could not clean up partial file: $cleanupError');
+      }
       return false;
     }
   }
+
+Future<Uint8List> getFileBytes(String remotePath) async {
+  if (_smbConnect == null || _currentProfile == null) {
+    logger.e('❌ Not connected to SMB server');
+    throw Exception('Not connected to SMB server');
+  }
+
+  try {
+    logger.d('📥 Getting file bytes from SMB: $remotePath');
+    // Clean path - remove double slashes and leading slash
+    var cleanPath = remotePath.replaceAll('//', '/');
+    if (cleanPath.startsWith('/')) {
+      cleanPath = cleanPath.substring(1);
+    }
+    final sharePath = '/${_currentProfile!.shareName}/$cleanPath';
+    logger.d('📝 Clean SMB path: $sharePath');
+    
+    final smbFile = await _smbConnect!.file(sharePath);
+    final reader = await _smbConnect!.openRead(smbFile);
+    
+    final chunks = <Uint8List>[];
+    int totalBytes = 0;
+    
+    await for (var chunk in reader) {
+      chunks.add(chunk);
+      totalBytes += chunk.length;
+      logger.d('📊 Read: $totalBytes bytes');
+    }
+    
+    final fileBytes = Uint8List(totalBytes);
+    int offset = 0;
+    for (var chunk in chunks) {
+      fileBytes.setRange(offset, offset + chunk.length, chunk);
+      offset += chunk.length;
+    }
+    
+    logger.i('✅ File bytes retrieved: $remotePath (${fileBytes.length} bytes)');
+    return fileBytes;
+  } catch (e) {
+    logger.e('❌ Error getting file bytes: $e');
+    rethrow;
+  }
+}
 
   Future<bool> uploadFile(
     String localPath,
@@ -322,8 +380,6 @@ Future<bool> downloadFile(
     } catch (e) {
       logger.e('❌ Error uploading file: $e');
       logger.e('Stack trace: ${StackTrace.current}');
-      print('Error uploading file: $e');
-      print('Stack trace: ${StackTrace.current}');
       return false;
     }
   }
@@ -348,7 +404,6 @@ Future<bool> downloadFile(
       return true;
     } catch (e) {
       logger.e('❌ Error deleting file: $e');
-      print('Error deleting file: $e');
       return false;
     }
   }
@@ -382,7 +437,6 @@ Future<bool> downloadFile(
       return true;
     } catch (e) {
       logger.e('❌ Error renaming file: $e');
-      print('Error renaming file: $e');
       return false;
     }
   }
@@ -406,10 +460,116 @@ Future<bool> downloadFile(
       return true;
     } catch (e) {
       logger.e('❌ Error creating folder: $e');
-      print('Error creating folder: $e');
       return false;
     }
   }
+
+
+/// Progressive image loading - get first chunk quickly for preview
+Future<Uint8List?> getImagePreviewChunk(String remotePath, int maxBytes) async {
+  if (_smbConnect == null || _currentProfile == null) {
+    logger.e('❌ Not connected to SMB server');
+    return null;
+  }
+
+  try {
+    logger.d('📥 Getting image preview chunk from SMB: $remotePath (max: $maxBytes bytes)');
+    var cleanPath = remotePath.replaceAll('//', '/');
+    if (cleanPath.startsWith('/')) {
+      cleanPath = cleanPath.substring(1);
+    }
+    final sharePath = '/${_currentProfile!.shareName}/$cleanPath';
+    
+    final smbFile = await _smbConnect!.file(sharePath);
+    final reader = await _smbConnect!.openRead(smbFile);
+    
+    final chunks = <Uint8List>[];
+    int totalBytes = 0;
+    
+    await for (var chunk in reader) {
+      chunks.add(chunk);
+      totalBytes += chunk.length;
+      
+      if (totalBytes >= maxBytes) {
+        logger.d('📊 Preview chunk ready: $totalBytes bytes');
+        break;
+      }
+    }
+    
+    final previewBytes = Uint8List(totalBytes);
+    int offset = 0;
+    for (var chunk in chunks) {
+      previewBytes.setRange(offset, offset + chunk.length, chunk);
+      offset += chunk.length;
+    }
+    
+    logger.i('✅ Image preview chunk loaded: ${previewBytes.length} bytes');
+    return previewBytes;
+  } catch (e) {
+    logger.e('❌ Error getting image preview: $e');
+    return null;
+  }
+}
+
+/// Get image bytes by downloading to temp file first (more reliable for binary data)
+Future<Uint8List> getImageBytesWithProgress(
+  String remotePath, {
+  Function(int, int)? onProgress,
+}) async {
+  if (_smbConnect == null || _currentProfile == null) {
+    logger.e('❌ Not connected to SMB server');
+    throw Exception('Not connected to SMB server');
+  }
+
+  try {
+    logger.d('📥 Getting full image from SMB: $remotePath');
+    var cleanPath = remotePath.replaceAll('//', '/');
+    if (cleanPath.startsWith('/')) {
+      cleanPath = cleanPath.substring(1);
+    }
+    final sharePath = '/${_currentProfile!.shareName}/$cleanPath';
+    logger.d('📝 Clean SMB path: $sharePath');
+    
+    final smbFile = await _smbConnect!.file(sharePath);
+    final fileSize = smbFile.size;
+    logger.d('📊 File size: $fileSize bytes');
+    
+    // Get temp directory and create temp file
+    final tempDir = await getTemporaryDirectory();
+    final tempPath = '${tempDir.path}/.temp_image_${DateTime.now().millisecondsSinceEpoch}';
+    final tempFile = File(tempPath);
+    
+    logger.d('💾 Using temp file: $tempPath');
+    
+    // Download to temp file with progress
+    final success = await downloadFile(
+      remotePath,
+      tempPath,
+      onProgress: onProgress,
+    );
+    
+    if (!success) {
+      throw Exception('Failed to download image file');
+    }
+    
+    // Read the temp file into memory
+    final fileBytes = await tempFile.readAsBytes();
+    logger.d('📖 Read from temp file: ${fileBytes.length} bytes');
+    
+    // Delete temp file
+    try {
+      await tempFile.delete();
+    } catch (e) {
+      logger.d('⚠️ Failed to delete temp file: $e');
+    }
+    
+    logger.i('✅ Full image loaded: ${fileBytes.length} bytes');
+    return fileBytes;
+  } catch (e) {
+    logger.e('❌ Error getting image: $e');
+    rethrow;
+  }
+}
 
   void disconnect() {
     try {
